@@ -194,13 +194,27 @@ def start_selection():
     if region:
         selected_region = region
 
-def render_minimap_settings():
+# 미니맵 윈도우 표시 상태
+minimap_window_visible = False
+
+def toggle_minimap():
+    """M키로 미니맵 윈도우 토글"""
+    global minimap_window_visible
+    if dpg.does_item_exist("minimap_window"):
+        minimap_window_visible = not minimap_window_visible
+        dpg.configure_item("minimap_window", show=minimap_window_visible)
+
+def create_minimap_window():
+    """별도의 미니맵 윈도우 생성"""
     if not dpg.does_item_exist("minimap_texture_registry"):
         with dpg.texture_registry(tag="minimap_texture_registry"):
             dpg.add_dynamic_texture(width=200, height=120, default_value=texture_data, tag="minimap_texture")
-
-    dpg.add_button(label="미니맵 영역 지정", callback=start_selection)
-    dpg.add_spacer(height=5)
     
-    with dpg.child_window(width=202, height=122, border=True, no_scrollbar=True, no_scroll_with_mouse=True):
+    with dpg.window(label="미니맵", tag="minimap_window", width=220, height=160, 
+                    no_collapse=True, no_scrollbar=True, show=False, pos=[510, 10]):
         dpg.add_drawlist(width=200, height=120, tag="minimap_drawlist")
+
+def render_minimap_settings():
+    """메인 GUI에 미니맵 설정 버튼만 표시"""
+    dpg.add_button(label="미니맵 영역 지정", callback=start_selection)
+    dpg.add_text("M키: 미니맵 창 열기/닫기", color=[150, 150, 150])

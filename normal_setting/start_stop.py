@@ -89,8 +89,8 @@ def setup_hotkeys():
     thread.start()
 
 def render_start_stop():
-    """시작/정지 버튼 렌더링"""
-    dpg.add_spacer(height=10)
+    """시작/정지 버튼 렌더링 (탭 가장 아래에 배치)"""
+    dpg.add_spacer(height=350)  # 탭 하단으로 밀어내기
     with dpg.group(horizontal=True):
         dpg.add_button(label="시작", tag="start_button", callback=start_action, width=80)
         dpg.add_button(label="정지", tag="stop_button", callback=stop_action, width=80, enabled=False)

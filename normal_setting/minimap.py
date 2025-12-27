@@ -27,6 +27,9 @@ learned_mask = None
 best_learned_score = 0.0
 learning_threshold = 0.95  # 이 이상의 정확도일 때 학습
 
+# 현재 플레이어 위치 (캔버스 좌표)
+current_player_pos = None
+
 if player_template_raw is not None:
     if player_template_raw.shape[2] == 4:
         player_template = cv2.cvtColor(player_template_raw, cv2.COLOR_BGRA2BGR)
@@ -38,7 +41,7 @@ if player_template_raw is not None:
         upper_yellow = np.array([30, 255, 255])
         player_mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
 else:
-    print(f"Warning: Could not load player template from {player_template_path}")
+    pass
 
 class AreaSelector:
     def __init__(self):
@@ -87,9 +90,13 @@ class AreaSelector:
         return self.result
 
 def update_minimap():
-    global texture_data, learned_template, learned_mask, best_learned_score
+    global texture_data, learned_template, learned_mask, best_learned_score, current_player_pos
     
-    capture_area = selected_region if selected_region else monitor
+    # 영역이 선택되지 않았으면 캡처하지 않음
+    if selected_region is None:
+        return
+    
+    capture_area = selected_region
     
     try:
         img_mss = sct.grab(capture_area)
@@ -114,7 +121,7 @@ def update_minimap():
             res = cv2.matchTemplate(img_bgr, template_umat, cv2.TM_CCORR_NORMED, mask=mask_umat)
             _, max_val, _, max_loc = cv2.minMaxLoc(res)
             
-            if max_val >= 0.9:
+            if max_val >= 0.97:
                 best_score = max_val
                 h, w = current_template.shape[:2]
                 center_x = max_loc[0] + w // 2
@@ -133,7 +140,6 @@ def update_minimap():
                         upper_yellow = np.array([35, 255, 255])
                         learned_mask = cv2.inRange(hsv_template, lower_yellow, upper_yellow)
                         best_learned_score = max_val
-                        print(f"[자동 학습] 새 템플릿 저장됨! 정확도: {max_val:.4f}")
         
         # 2. 컬러 기반 추적 (백업)
         if player_pos_on_canvas is None or best_score < 0.85:
@@ -170,9 +176,16 @@ def update_minimap():
             # 초록색 점으로 표시 (반지름 3으로 약간 더 크게)
             if player_pos_on_canvas:
                 dpg.draw_circle(player_pos_on_canvas, 3, color=[0, 255, 0, 255], fill=[0, 255, 0, 255], parent="minimap_drawlist")
+        
+        # 플레이어 위치 업데이트
+        current_player_pos = player_pos_on_canvas
                 
     except Exception as e:
         pass
+
+def get_player_position():
+    """현재 플레이어 위치 반환 (캔버스 좌표)"""
+    return current_player_pos
 
 def start_selection():
     global selected_region

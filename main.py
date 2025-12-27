@@ -1,7 +1,9 @@
 import dearpygui.dearpygui as dpg
 import os
 
-from normal_setting.minimap import render_minimap_settings, update_minimap
+from normal_setting.minimap import render_minimap_settings, update_minimap, get_player_position
+from normal_setting.player_x_y import render_player_xy, update_player_xy
+from normal_setting.start_stop import render_start_stop
 
 dpg.create_context()
 
@@ -10,7 +12,6 @@ dpg.create_viewport(title='Maple Land Macro', width=500, height=500)
 
 # 한글 폰트 설정 (깨짐 방지)
 with dpg.font_registry():
-    # 윈도우 기본 폰트 경로 시도
     font_path = "C:/Windows/Fonts/malgun.ttf"
     if os.path.exists(font_path):
         with dpg.font(font_path, 18) as default_font:
@@ -22,6 +23,8 @@ with dpg.window(label="Main Window", width=500, height=500, no_resize=True, no_m
     with dpg.tab_bar():
         with dpg.tab(label="기본설정"):
             render_minimap_settings()
+            render_player_xy()
+            render_start_stop()
         with dpg.tab(label="공격설정"):
             dpg.add_text("공격설정 탭입니다.")
 
@@ -31,6 +34,7 @@ dpg.show_viewport()
 # 메인 루프 (실시간 업데이트)
 while dpg.is_dearpygui_running():
     update_minimap()
+    update_player_xy()
     dpg.render_dearpygui_frame()
 
 dpg.destroy_context()

@@ -3,6 +3,8 @@ import mss
 import numpy as np
 import cv2
 import tkinter as tk
+import threading
+import time
 
 # mss 인스턴스 생성
 sct = mss.mss()
@@ -13,6 +15,12 @@ selected_region = None  # {top, left, width, height}
 
 # 텍스처 데이터 초기화 (200x120, RGBA)
 texture_data = np.zeros((120, 200, 4), dtype=np.float32)
+
+# 스레드 제어 변수
+capture_thread = None
+capture_running = False
+latest_frame = None
+frame_lock = threading.Lock()
 
 # 플레이어 템플릿 및 마스크 준비
 player_template_path = "tools/player_img/y_p.png"
@@ -42,6 +50,39 @@ if player_template_raw is not None:
         player_mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
 else:
     pass
+
+def capture_loop():
+    """고속 캡처 루프 (별도 스레드)"""
+    global latest_frame, capture_running, learned_template, learned_mask, best_learned_score, current_player_pos
+    
+    with mss.mss() as sct_thread:
+        while capture_running:
+            if selected_region is None:
+                time.sleep(0.1)
+                continue
+                
+            try:
+                # 캡처 (가장 빠른 속도로)
+                img_mss = sct_thread.grab(selected_region)
+                img_np = np.array(img_mss)
+                
+                # 스레드 안전하게 저장
+                with frame_lock:
+                    latest_frame = img_np
+                
+                # CPU 점유율 조절
+                # time.sleep(0.001)
+                
+            except Exception as e:
+                time.sleep(1)
+
+def start_capture_thread():
+    """캡처 스레드 시작"""
+    global capture_thread, capture_running
+    if capture_thread is None or not capture_thread.is_alive():
+        capture_running = True
+        capture_thread = threading.Thread(target=capture_loop, daemon=True)
+        capture_thread.start()
 
 class AreaSelector:
     def __init__(self):
@@ -89,9 +130,25 @@ class AreaSelector:
         self.root.mainloop()
         return self.result
 
+# FPS 계산 변수
+last_time = time.time()
+frame_count = 0
+current_fps = 0
+
 def update_minimap():
-    global texture_data, learned_template, learned_mask, best_learned_score, current_player_pos
+    global texture_data, learned_template, learned_mask, best_learned_score, current_player_pos, latest_frame
+    global last_time, frame_count, current_fps
     
+    # FPS 계산
+    current_time = time.time()
+    frame_count += 1
+    if current_time - last_time >= 1.0:
+        current_fps = frame_count
+        frame_count = 0
+        last_time = current_time
+        if dpg.does_item_exist("minimap_fps_text"):
+            dpg.set_value("minimap_fps_text", f"FPS: {current_fps}")
+
     # 영역이 선택되지 않았으면 캡처하지 않음
     if selected_region is None:
         return
@@ -99,11 +156,17 @@ def update_minimap():
     capture_area = selected_region
     
     try:
-        img_mss = sct.grab(capture_area)
-        img_np = np.array(img_mss)
+        # 최신 프레임 가져오기 (스레드에서 캡처한 것)
+        img_np = None
+        with frame_lock:
+            if latest_frame is not None:
+                img_np = latest_frame.copy()
         
-        img_umat = cv2.UMat(img_np)
-        img_bgr = cv2.cvtColor(img_umat, cv2.COLOR_BGRA2BGR)
+        if img_np is None:
+            return
+        
+        # CPU 연산 (UMat 사용 최소화, 스레드 분리 효과로 충분히 빠름)
+        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_BGRA2BGR)
         img_hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
         
         player_pos_on_canvas = None
@@ -115,10 +178,7 @@ def update_minimap():
         
         # 1. 템플릿 매칭
         if current_template is not None:
-            template_umat = cv2.UMat(current_template)
-            mask_umat = cv2.UMat(current_mask)
-            
-            res = cv2.matchTemplate(img_bgr, template_umat, cv2.TM_CCORR_NORMED, mask=mask_umat)
+            res = cv2.matchTemplate(img_bgr, current_template, cv2.TM_CCORR_NORMED, mask=current_mask)
             _, max_val, _, max_loc = cv2.minMaxLoc(res)
             
             if max_val >= 0.97:
@@ -130,9 +190,8 @@ def update_minimap():
                 
                 # 자동 학습: 정확도가 매우 높을 때 현재 이미지를 새 템플릿으로 저장
                 if max_val >= learning_threshold and max_val > best_learned_score:
-                    img_bgr_cpu = img_bgr.get()
                     x, y = max_loc
-                    new_template = img_bgr_cpu[y:y+h, x:x+w]
+                    new_template = img_bgr[y:y+h, x:x+w]
                     if new_template.shape[0] == h and new_template.shape[1] == w:
                         learned_template = new_template.copy()
                         hsv_template = cv2.cvtColor(learned_template, cv2.COLOR_BGR2HSV)
@@ -150,8 +209,7 @@ def update_minimap():
             mask = cv2.erode(mask, None, iterations=2)
             mask = cv2.dilate(mask, None, iterations=2)
             
-            mask_cpu = mask.get()
-            contours, _ = cv2.findContours(mask_cpu, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             if contours:
                 c = max(contours, key=cv2.contourArea)
@@ -163,9 +221,9 @@ def update_minimap():
                         player_pos_on_canvas = [(center_x / capture_area["width"]) * 200, (center_y / capture_area["height"]) * 120]
         
         # 배경 이미지 업데이트
-        img_rgba = cv2.cvtColor(img_umat, cv2.COLOR_BGRA2RGBA)
-        img_resized = cv2.resize(img_rgba, (200, 120))
-        texture_data = img_resized.get().astype(np.float32) / 255.0
+        img_rgba = cv2.cvtColor(img_np, cv2.COLOR_BGRA2RGBA)
+        img_resized = cv2.resize(img_rgba, (200, 120), interpolation=cv2.INTER_NEAREST)
+        texture_data = img_resized.astype(np.float32) / 255.0
         
         if dpg.does_item_exist("minimap_texture"):
             dpg.set_value("minimap_texture", texture_data)
@@ -173,12 +231,57 @@ def update_minimap():
         if dpg.does_item_exist("minimap_drawlist"):
             dpg.delete_item("minimap_drawlist", children_only=True)
             dpg.draw_image("minimap_texture", [0, 0], [200, 120], parent="minimap_drawlist")
-            # 초록색 점으로 표시 (반지름 3으로 약간 더 크게)
+            
+            # 층 구역 가로선 그리기 (파란색)
+            try:
+                from floor import f_setting
+                # 모든 구역 순회하여 가로선 그리기
+                for zone in f_setting.zone_data:
+                    if zone['y'] is not None:
+                        line_y = zone['y']
+                        line_left_x = zone['left_x']
+                        line_right_x = zone['right_x']
+                        
+                        # X값 정렬 (사용자가 반대로 입력했을 경우 대비)
+                        actual_left = min(line_left_x, line_right_x)
+                        actual_right = max(line_left_x, line_right_x)
+                        
+                        dpg.draw_line([actual_left, line_y], [actual_right, line_y], 
+                                      color=[0, 100, 255, 255], thickness=2, parent="minimap_drawlist")
+            except:
+                pass
+
+            # 사다리 좌표 표시 (초록색 점)
+            try:
+                from ladder.ladder import ladder_data
+                for ladder in ladder_data:
+                    if ladder['x'] is not None and ladder['y'] is not None:
+                        dpg.draw_circle([ladder['x'], ladder['y']], 3, color=[0, 255, 0, 255], fill=[0, 255, 0, 255], parent="minimap_drawlist")
+            except:
+                pass
+            
+            # 점프다운 좌표 표시 (분홍색 점)
+            try:
+                from jump_down.j_d import jump_down_data
+                for jd in jump_down_data:
+                    if jd['x'] is not None and jd['y'] is not None:
+                        dpg.draw_circle([jd['x'], jd['y']], 3, color=[255, 0, 255, 255], fill=[255, 0, 255, 255], parent="minimap_drawlist")
+            except:
+                pass
+            
+            # 초록색 점으로 플레이어 표시
             if player_pos_on_canvas:
                 dpg.draw_circle(player_pos_on_canvas, 3, color=[0, 255, 0, 255], fill=[0, 255, 0, 255], parent="minimap_drawlist")
         
         # 플레이어 위치 업데이트
         current_player_pos = player_pos_on_canvas
+        
+        # 좌표 텍스트 업데이트
+        if dpg.does_item_exist("minimap_xy_text"):
+            if current_player_pos:
+                dpg.set_value("minimap_xy_text", f"X: {current_player_pos[0]:.1f} | Y: {current_player_pos[1]:.1f}")
+            else:
+                dpg.set_value("minimap_xy_text", "X: - | Y: -")
                 
     except Exception as e:
         pass
@@ -187,15 +290,17 @@ def get_player_position():
     """현재 플레이어 위치 반환 (캔버스 좌표)"""
     return current_player_pos
 
-def start_selection():
+def start_selection(sender=None, app_data=None):
     global selected_region
     selector = AreaSelector()
     region = selector.get_region()
     if region:
         selected_region = region
+        # 캡처 스레드 시작
+        start_capture_thread()
 
 # 미니맵 윈도우 표시 상태
-minimap_window_visible = False
+minimap_window_visible = True
 
 def toggle_minimap():
     """M키로 미니맵 윈도우 토글"""
@@ -210,11 +315,15 @@ def create_minimap_window():
         with dpg.texture_registry(tag="minimap_texture_registry"):
             dpg.add_dynamic_texture(width=200, height=120, default_value=texture_data, tag="minimap_texture")
     
-    with dpg.window(label="미니맵", tag="minimap_window", width=220, height=160, 
-                    no_collapse=True, no_scrollbar=True, show=False, pos=[510, 10]):
+    with dpg.window(label="미니맵", tag="minimap_window", width=220, height=220, 
+                    no_collapse=True, no_scrollbar=True, show=True, pos=[510, 10]):
         dpg.add_drawlist(width=200, height=120, tag="minimap_drawlist")
+        with dpg.group(horizontal=True):
+            dpg.add_text("X: - | Y: -", tag="minimap_xy_text")
+            dpg.add_spacer(width=20)
+            dpg.add_text("FPS: 0", tag="minimap_fps_text", color=[0, 255, 0])
 
 def render_minimap_settings():
     """메인 GUI에 미니맵 설정 버튼만 표시"""
-    dpg.add_button(label="미니맵 영역 지정", callback=start_selection)
+    dpg.add_button(label="미니맵 영역 지정", callback=start_selection, width=120, height=30)
     dpg.add_text("M키: 미니맵 창 열기/닫기", color=[150, 150, 150])

@@ -24,6 +24,10 @@ for i in range(13):
 is_running = False
 current_direction = None
 
+# 방향 전환 타이머
+direction_switch_interval = 0  # 0이면 비활성화
+last_direction_switch_time = 0
+
 def key_down(vk_code):
     user32.keybd_event(vk_code, 0, 0, 0)
 
@@ -144,10 +148,30 @@ def set_zone_1(sender=None, app_data=None):
     if pos:
         zone_data[0]['y'] = pos[1]
 
+def on_direction_switch_interval_change(sender, app_data):
+    global direction_switch_interval
+    try:
+        direction_switch_interval = float(app_data)
+    except:
+        direction_switch_interval = 0
+
 def render_floor_settings():
     """기본설정 탭: 현재 구역 표시 및 1구역 지정"""
     dpg.add_button(label="1구역지정", callback=set_zone_1, width=120, height=30)
     dpg.add_text("현재구역: -", tag="current_floor_text")
+    dpg.add_text("상태: 정지", tag="macro_status_text", color=[255, 100, 100])
+    
+    dpg.add_spacer(height=10)
+    with dpg.group(horizontal=True):
+        dpg.add_text("방향키전환(초):")
+        dpg.add_input_float(default_value=0, width=80, callback=on_direction_switch_interval_change, format="%.1f")
+    dpg.add_text("※ 0이면 비활성화, 경계 내에서만 작동", color=[150, 150, 150])
+    
+    dpg.add_spacer(height=10)
+    from normal_setting.minimap import set_enemy_player_detection
+    with dpg.group(horizontal=True):
+        dpg.add_checkbox(label="플레이어 감지", callback=set_enemy_player_detection)
+        dpg.add_text("(미니맵에서 적 감지 시 알람)", color=[150, 150, 150])
 
 def render_zone_settings():
     """구역설정 탭: 13개 구역 설정 (X좌표만)"""
@@ -163,37 +187,94 @@ def render_zone_settings():
                                     callback=on_right_x_change, user_data=i, format="%.1f")
             dpg.add_spacer(height=3)
 
-def update_floor_display():
-    """현재 구역 표시 및 자동 이동"""
-    global current_direction
+# 이동 스레드 변수
+movement_thread = None
+movement_running = False
+
+def movement_loop():
+    """이동 로직을 처리하는 별도 스레드 (GUI 렉 방지)"""
+    global current_direction, last_direction_switch_time, movement_running
     
+    while movement_running:
+        try:
+            if is_running:
+                zone = get_current_zone()
+                if zone is not None:
+                    pos = minimap.get_player_position()
+                    if pos:
+                        idx = zone - 1
+                        current_x = pos[0]
+                        left_x = zone_data[idx]['left_x']
+                        right_x = zone_data[idx]['right_x']
+                        
+                        # 경계 이탈 시 복귀
+                        if current_x <= left_x:
+                            if current_direction != 'right':
+                                key_up(VK_LEFT)
+                                key_up(VK_RIGHT)
+                                time.sleep(0.01)
+                                key_down(VK_RIGHT)
+                                current_direction = 'right'
+                                last_direction_switch_time = time.time()
+                        
+                        elif current_x >= right_x:
+                            if current_direction != 'left':
+                                key_up(VK_LEFT)
+                                key_up(VK_RIGHT)
+                                time.sleep(0.01)
+                                key_down(VK_LEFT)
+                                current_direction = 'left'
+                                last_direction_switch_time = time.time()
+                        
+                        # 타이머 기반 방향 전환 (경계 내에서만)
+                        elif direction_switch_interval > 0:
+                            current_time = time.time()
+                            if current_time - last_direction_switch_time >= direction_switch_interval:
+                                key_up(VK_LEFT)
+                                key_up(VK_RIGHT)
+                                time.sleep(0.01)
+                                
+                                if current_direction == 'right':
+                                    key_down(VK_LEFT)
+                                    current_direction = 'left'
+                                else:
+                                    key_down(VK_RIGHT)
+                                    current_direction = 'right'
+                                last_direction_switch_time = current_time
+            
+            time.sleep(0.01)  # 루프 주기
+            
+        except Exception as e:
+            print(f"Movement loop error: {e}")
+            time.sleep(1)
+
+def start_movement_thread():
+    """이동 스레드 시작"""
+    global movement_thread, movement_running
+    if movement_thread is None or not movement_thread.is_alive():
+        movement_running = True
+        movement_thread = threading.Thread(target=movement_loop, daemon=True)
+        movement_thread.start()
+
+def update_floor_display():
+    """현재 구역 및 상태 표시 (GUI 업데이트만 수행)"""
     zone = get_current_zone()
+    
     if dpg.does_item_exist("current_floor_text"):
         if zone is not None:
             dpg.set_value("current_floor_text", f"현재구역: {zone}")
         else:
             dpg.set_value("current_floor_text", "현재구역: -")
-    
-    # 시작 상태일 때 자동 이동
-    if is_running and zone is not None:
-        pos = minimap.get_player_position()
-        if pos:
-            idx = zone - 1
-            current_x = pos[0]
-            left_x = zone_data[idx]['left_x']
-            right_x = zone_data[idx]['right_x']
             
-            if current_x <= left_x:
-                if current_direction != 'right':
-                    key_up(VK_LEFT)
-                    key_down(VK_RIGHT)
-                    current_direction = 'right'
-            
-            elif current_x >= right_x:
-                if current_direction != 'left':
-                    key_up(VK_RIGHT)
-                    key_down(VK_LEFT)
-                    current_direction = 'left'
+    if dpg.does_item_exist("macro_status_text"):
+        if is_running:
+            dpg.set_value("macro_status_text", "상태: 시작")
+            dpg.configure_item("macro_status_text", color=[100, 255, 100])
+        else:
+            dpg.set_value("macro_status_text", "상태: 정지")
+            dpg.configure_item("macro_status_text", color=[255, 100, 100])
 
-# 핫키 설정
+# 핫키 설정 및 이동 스레드 시작
 setup_hotkeys()
+start_movement_thread()
+

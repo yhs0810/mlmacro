@@ -13,6 +13,10 @@ from training_area.training_area import render_training_area, update_mob_area, c
 from normal_setting.ign_capture import render_ign_capture
 from normal_setting.monster_capture import render_monster_capture
 from attack_setting.attack_range import render_attack_settings
+from attack_setting.attack_key_setting import render_attack_key_settings
+from attack_setting.tele_port import render_teleport_settings
+from attack_setting.stop_walking import render_stop_walking_settings
+from attack_setting.behind_mob import render_behind_mob_settings
 
 # M키, T키 핫키 감지
 user32 = ctypes.windll.user32
@@ -91,6 +95,14 @@ with dpg.window(label="Main Window", width=500, height=500, no_resize=True, no_m
             render_zone_settings()
         with dpg.tab(label="공격설정"):
             render_attack_settings()
+            dpg.add_spacer(height=10)
+            render_attack_key_settings()
+            dpg.add_spacer(height=10)
+            render_teleport_settings()
+            dpg.add_spacer(height=10)
+            render_stop_walking_settings()
+            dpg.add_spacer(height=5)
+            render_behind_mob_settings()
         with dpg.tab(label="사다리"):
             render_ladder_settings()
         with dpg.tab(label="점프다운"):

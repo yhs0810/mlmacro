@@ -14,6 +14,9 @@ VK_RIGHT = 0x27
 VK_F1 = 0x70
 VK_F2 = 0x71
 
+# 현재 방향 키 (기본값: 오른쪽)
+current_direction_key = VK_RIGHT
+
 def key_down(vk_code):
     """키 누르기 (홀드) - keybd_event 사용"""
     user32.keybd_event(vk_code, 0, 0, 0)
@@ -25,13 +28,24 @@ def key_up(vk_code):
 def release_all_keys():
     """모든 키 떼기"""
     key_up(VK_RIGHT)
+    key_up(0x25) # VK_LEFT
+
+def pause_movement():
+    """이동 일시 정지 (공격 시 호출)"""
+    if is_running:
+        key_up(current_direction_key)
+
+def resume_movement():
+    """이동 재개 (공격 종료 시 호출)"""
+    if is_running:
+        key_down(current_direction_key)
 
 def start_action(sender=None, app_data=None):
     """시작 버튼 동작"""
     global is_running
     if not is_running:
         is_running = True
-        key_down(VK_RIGHT)
+        key_down(current_direction_key)
         update_button_states()
 
 def stop_action(sender=None, app_data=None):

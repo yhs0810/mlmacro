@@ -22,12 +22,24 @@ capture_running = False
 latest_frame = None
 frame_lock = threading.Lock()
 
-# 플레이어 템플릿 및 마스크 준비
+# 플레이어 템플릿 및 마스크 준비 (y_p.png)
 player_template_path = "tools/player_img/y_p.png"
 player_template_raw = cv2.imread(player_template_path, cv2.IMREAD_UNCHANGED)
 
 player_template = None
 player_mask = None
+
+# 적 플레이어 감지용 템플릿 (r_p.png)
+enemy_player_template_path = "tools/player_img/r_p.png"
+enemy_player_template_raw = cv2.imread(enemy_player_template_path, cv2.IMREAD_UNCHANGED)
+
+enemy_player_template = None
+enemy_player_mask = None
+
+# 적 플레이어 감지 변수
+enemy_player_detection = False
+enemy_player_alarm_cooldown = 0
+enemy_player_detected_box = None  # (x, y, w, h) 캔버스 좌표
 
 # 자동 학습 관련 변수
 learned_template = None
@@ -51,12 +63,36 @@ if player_template_raw is not None:
 else:
     pass
 
+# 적 플레이어 템플릿 처리 (동일한 방식)
+if enemy_player_template_raw is not None:
+    if enemy_player_template_raw.shape[2] == 4:
+        enemy_player_template = cv2.cvtColor(enemy_player_template_raw, cv2.COLOR_BGRA2BGR)
+        enemy_player_mask = enemy_player_template_raw[:, :, 3]
+    else:
+        enemy_player_template = enemy_player_template_raw
+        hsv = cv2.cvtColor(enemy_player_template, cv2.COLOR_BGR2HSV)
+        lower_red = np.array([0, 100, 100])
+        upper_red = np.array([10, 255, 255])
+        enemy_player_mask = cv2.inRange(hsv, lower_red, upper_red)
+else:
+    pass
+
+def set_enemy_player_detection(sender, app_data):
+    global enemy_player_detection
+    enemy_player_detection = app_data
+    print(f"Enemy player detection: {enemy_player_detection}")
+
 def capture_loop():
     """고속 캡처 루프 (별도 스레드)"""
     global latest_frame, capture_running, learned_template, learned_mask, best_learned_score, current_player_pos
     
+    target_fps = 100
+    frame_time = 1.0 / target_fps
+    
     with mss.mss() as sct_thread:
         while capture_running:
+            start_time = time.time()
+            
             if selected_region is None:
                 time.sleep(0.1)
                 continue
@@ -70,8 +106,11 @@ def capture_loop():
                 with frame_lock:
                     latest_frame = img_np
                 
-                # CPU 점유율 조절
-                # time.sleep(0.001)
+                # FPS 제한 (100 FPS)
+                elapsed = time.time() - start_time
+                sleep_time = frame_time - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
                 
             except Exception as e:
                 time.sleep(1)
@@ -200,6 +239,50 @@ def update_minimap():
                         learned_mask = cv2.inRange(hsv_template, lower_yellow, upper_yellow)
                         best_learned_score = max_val
         
+        # 적 플레이어 감지 (r_p.png)
+        global enemy_player_alarm_cooldown
+        from normal_setting import start_stop
+        
+        if enemy_player_detection and start_stop.is_running and enemy_player_template is not None:
+            current_time = time.time()
+            
+            res_enemy = cv2.matchTemplate(img_bgr, enemy_player_template, cv2.TM_CCORR_NORMED, mask=enemy_player_mask)
+            _, max_val_enemy, _, max_loc_enemy = cv2.minMaxLoc(res_enemy)
+            
+            # 동일한 0.97 임계값 사용
+            if max_val_enemy >= 0.97:
+                global enemy_player_detected_box
+                h_e, w_e = enemy_player_template.shape[:2]
+                # 캔버스 좌표로 변환 (200x120)
+                canvas_x = (max_loc_enemy[0] / capture_area["width"]) * 200
+                canvas_y = (max_loc_enemy[1] / capture_area["height"]) * 120
+                canvas_w = (w_e / capture_area["width"]) * 200
+                canvas_h = (h_e / capture_area["height"]) * 120
+                enemy_player_detected_box = (canvas_x, canvas_y, canvas_w, canvas_h)
+                
+                # 쿨타임 확인 (1초) - 알람만 쿨타임 적용
+                if current_time >= enemy_player_alarm_cooldown:
+                    print(f"Enemy player detected! Score: {max_val_enemy:.2f}")
+                    enemy_player_alarm_cooldown = current_time + 1.0  # 1초 쿨타임
+                    
+                    # 알람 재생 (별도 스레드로 비동기 재생)
+                    def play_alarm():
+                        try:
+                            import winsound
+                            import os
+                            # 절대 경로로 변환
+                            alarm_path = os.path.abspath("tools/alarm/player.wav")
+                            winsound.PlaySound(alarm_path, winsound.SND_ASYNC | winsound.SND_FILENAME)
+                        except Exception as e:
+                            print(f"Alarm play error: {e}")
+                    
+                    import threading
+                    threading.Thread(target=play_alarm, daemon=True).start()
+            else:
+                enemy_player_detected_box = None
+        else:
+            enemy_player_detected_box = None
+        
         # 2. 컬러 기반 추적 (백업)
         if player_pos_on_canvas is None or best_score < 0.85:
             lower_yellow = np.array([20, 100, 100])
@@ -272,6 +355,11 @@ def update_minimap():
             # 초록색 점으로 플레이어 표시
             if player_pos_on_canvas:
                 dpg.draw_circle(player_pos_on_canvas, 3, color=[0, 255, 0, 255], fill=[0, 255, 0, 255], parent="minimap_drawlist")
+            
+            # 적 플레이어 감지 위치 표시 (파란색 테두리)
+            if enemy_player_detected_box:
+                ex, ey, ew, eh = enemy_player_detected_box
+                dpg.draw_rectangle([ex, ey], [ex + ew, ey + eh], color=[0, 100, 255, 255], thickness=2, parent="minimap_drawlist")
         
         # 플레이어 위치 업데이트
         current_player_pos = player_pos_on_canvas
